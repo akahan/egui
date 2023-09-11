@@ -3,6 +3,7 @@
 use eframe::egui;
 
 fn main() -> Result<(), eframe::Error> {
+    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     let options = eframe::NativeOptions {
         drag_and_drop_support: true,
         initial_window_size: Some(egui::vec2(320.0, 240.0)),
@@ -11,7 +12,7 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Native file dialogs and drag-and-drop files",
         options,
-        Box::new(|_cc| Box::new(MyApp::default())),
+        Box::new(|_cc| Box::<MyApp>::default()),
     )
 }
 
@@ -52,10 +53,18 @@ impl eframe::App for MyApp {
                         } else {
                             "???".to_owned()
                         };
-                        if let Some(bytes) = &file.bytes {
-                            use std::fmt::Write as _;
-                            write!(info, " ({} bytes)", bytes.len()).ok();
+
+                        let mut additional_info = vec![];
+                        if !file.mime.is_empty() {
+                            additional_info.push(format!("type: {}", file.mime));
                         }
+                        if let Some(bytes) = &file.bytes {
+                            additional_info.push(format!("{} bytes", bytes.len()));
+                        }
+                        if !additional_info.is_empty() {
+                            info += &format!(" ({})", additional_info.join(", "));
+                        }
+
                         ui.label(info);
                     }
                 });
@@ -65,9 +74,11 @@ impl eframe::App for MyApp {
         preview_files_being_dropped(ctx);
 
         // Collect dropped files:
-        if !ctx.input().raw.dropped_files.is_empty() {
-            self.dropped_files = ctx.input().raw.dropped_files.clone();
-        }
+        ctx.input(|i| {
+            if !i.raw.dropped_files.is_empty() {
+                self.dropped_files = i.raw.dropped_files.clone();
+            }
+        });
     }
 }
 
@@ -76,22 +87,25 @@ fn preview_files_being_dropped(ctx: &egui::Context) {
     use egui::*;
     use std::fmt::Write as _;
 
-    if !ctx.input().raw.hovered_files.is_empty() {
-        let mut text = "Dropping files:\n".to_owned();
-        for file in &ctx.input().raw.hovered_files {
-            if let Some(path) = &file.path {
-                write!(text, "\n{}", path.display()).ok();
-            } else if !file.mime.is_empty() {
-                write!(text, "\n{}", file.mime).ok();
-            } else {
-                text += "\n???";
+    if !ctx.input(|i| i.raw.hovered_files.is_empty()) {
+        let text = ctx.input(|i| {
+            let mut text = "Dropping files:\n".to_owned();
+            for file in &i.raw.hovered_files {
+                if let Some(path) = &file.path {
+                    write!(text, "\n{}", path.display()).ok();
+                } else if !file.mime.is_empty() {
+                    write!(text, "\n{}", file.mime).ok();
+                } else {
+                    text += "\n???";
+                }
             }
-        }
+            text
+        });
 
         let painter =
             ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("file_drop_target")));
 
-        let screen_rect = ctx.input().screen_rect();
+        let screen_rect = ctx.screen_rect();
         painter.rect_filled(screen_rect, 0.0, Color32::from_black_alpha(192));
         painter.text(
             screen_rect.center(),

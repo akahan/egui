@@ -1,3 +1,5 @@
+use epaint::{emath::Rangef, vec2, Vec2};
+
 use crate::{area, window, Id, IdMap, InputState, LayerId, Pos2, Rect, Style};
 
 // ----------------------------------------------------------------------------
@@ -52,9 +54,10 @@ pub struct Memory {
     /// type CharCountCache<'a> = FrameCache<usize, CharCounter>;
     ///
     /// # let mut ctx = egui::Context::default();
-    /// let mut memory = ctx.memory();
-    /// let cache = memory.caches.cache::<CharCountCache<'_>>();
-    /// assert_eq!(cache.get("hello"), 5);
+    /// ctx.memory_mut(|mem| {
+    ///     let cache = mem.caches.cache::<CharCountCache<'_>>();
+    ///     assert_eq!(cache.get("hello"), 5);
+    /// });
     /// ```
     #[cfg_attr(feature = "persistence", serde(skip))]
     pub caches: crate::util::cache::CacheStorage,
@@ -88,6 +91,44 @@ pub struct Memory {
     everything_is_visible: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FocusDirection {
+    /// Select the widget closest above the current focused widget.
+    Up,
+
+    /// Select the widget to the right of the current focused widget.
+    Right,
+
+    /// Select the widget below the current focused widget.
+    Down,
+
+    /// Select the widget to the left of the the current focused widget.
+    Left,
+
+    /// Select the previous widget that had focus.
+    Previous,
+
+    /// Select the next widget that wants focus.
+    Next,
+
+    /// Don't change focus.
+    #[default]
+    None,
+}
+
+impl FocusDirection {
+    fn is_cardinal(&self) -> bool {
+        match self {
+            FocusDirection::Up
+            | FocusDirection::Right
+            | FocusDirection::Down
+            | FocusDirection::Left => true,
+
+            FocusDirection::Previous | FocusDirection::Next | FocusDirection::None => false,
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 
 /// Some global options that you can read and write.
@@ -102,9 +143,15 @@ pub struct Options {
     /// Controls the tessellator.
     pub tessellation_options: epaint::TessellationOptions,
 
-    /// This does not at all change the behavior of egui,
-    /// but is a signal to any backend that we want the [`crate::PlatformOutput::events`] read out loud.
+    /// This is a signal to any backend that we want the [`crate::PlatformOutput::events`] read out loud.
+    ///
+    /// The only change to egui is that labels can be focused by pressing tab.
+    ///
     /// Screen readers is an experimental feature of egui, and not supported on all platforms.
+    ///
+    /// `eframe` supports it only on web, using the `web_screen_reader` feature flag,
+    /// but you should consider using [AccessKit](https://github.com/AccessKit/accesskit) instead,
+    /// which `eframe` supports.
     pub screen_reader: bool,
 
     /// If true, the most common glyphs (ASCII) are pre-rendered to the texture atlas.
@@ -114,6 +161,11 @@ pub struct Options {
     /// This can lead to fewer texture operations, but may use up the texture atlas quicker
     /// if you are changing [`Style::text_styles`], of have a lot of text styles.
     pub preload_font_glyphs: bool,
+
+    /// Check reusing of [`Id`]s, and show a visual warning on screen when one is found.
+    ///
+    /// By default this is `true` in debug builds.
+    pub warn_on_id_clash: bool,
 }
 
 impl Default for Options {
@@ -123,6 +175,7 @@ impl Default for Options {
             tessellation_options: Default::default(),
             screen_reader: false,
             preload_font_glyphs: true,
+            warn_on_id_clash: cfg!(debug_assertions),
         }
     }
 }
@@ -187,11 +240,11 @@ pub(crate) struct Focus {
     /// If `true`, pressing tab will NOT move focus away from the current widget.
     is_focus_locked: bool,
 
-    /// Set at the beginning of the frame, set to `false` when "used".
-    pressed_tab: bool,
+    /// Set when looking for widget with navigational keys like arrows, tab, shift+tab
+    focus_direction: FocusDirection,
 
-    /// Set at the beginning of the frame, set to `false` when "used".
-    pressed_shift_tab: bool,
+    /// A cache of widget ids that are interested in focus with their corresponding rectangles.
+    focus_widgets_cache: IdMap<Rect>,
 }
 
 impl Interaction {
@@ -239,36 +292,40 @@ impl Focus {
             self.id_requested_by_accesskit = None;
         }
 
-        self.pressed_tab = false;
-        self.pressed_shift_tab = false;
-        for event in &new_input.events {
-            if matches!(
-                event,
-                crate::Event::Key {
-                    key: crate::Key::Escape,
-                    pressed: true,
-                    modifiers: _,
-                    ..
-                }
-            ) {
-                self.id = None;
-                self.is_focus_locked = false;
-                break;
-            }
+        self.focus_direction = FocusDirection::None;
 
+        for event in &new_input.events {
             if let crate::Event::Key {
-                key: crate::Key::Tab,
+                key,
                 pressed: true,
                 modifiers,
                 ..
             } = event
             {
-                if !self.is_focus_locked {
-                    if modifiers.shift {
-                        self.pressed_shift_tab = true;
-                    } else {
-                        self.pressed_tab = true;
+                if let Some(cardinality) = match key {
+                    crate::Key::ArrowUp => Some(FocusDirection::Up),
+                    crate::Key::ArrowRight => Some(FocusDirection::Right),
+                    crate::Key::ArrowDown => Some(FocusDirection::Down),
+                    crate::Key::ArrowLeft => Some(FocusDirection::Left),
+                    crate::Key::Tab => {
+                        if !self.is_focus_locked {
+                            if modifiers.shift {
+                                Some(FocusDirection::Previous)
+                            } else {
+                                Some(FocusDirection::Next)
+                            }
+                        } else {
+                            None
+                        }
                     }
+                    crate::Key::Escape => {
+                        self.id = None;
+                        self.is_focus_locked = false;
+                        Some(FocusDirection::None)
+                    }
+                    _ => None,
+                } {
+                    self.focus_direction = cardinality;
                 }
             }
 
@@ -287,6 +344,12 @@ impl Focus {
     }
 
     pub(crate) fn end_frame(&mut self, used_ids: &IdMap<Rect>) {
+        if self.focus_direction.is_cardinal() {
+            if let Some(found_widget) = self.find_widget_in_direction(used_ids) {
+                self.id = Some(found_widget);
+            }
+        }
+
         if let Some(id) = self.id {
             // Allow calling `request_focus` one frame and not using it until next frame
             let recently_gained_focus = self.id_previous_frame != Some(id);
@@ -309,30 +372,120 @@ impl Focus {
                 self.id = Some(id);
                 self.id_requested_by_accesskit = None;
                 self.give_to_next = false;
-                self.pressed_tab = false;
-                self.pressed_shift_tab = false;
+                self.reset_focus();
             }
         }
+
+        // The rect is updated at the end of the frame.
+        self.focus_widgets_cache
+            .entry(id)
+            .or_insert(Rect::EVERYTHING);
 
         if self.give_to_next && !self.had_focus_last_frame(id) {
             self.id = Some(id);
             self.give_to_next = false;
         } else if self.id == Some(id) {
-            if self.pressed_tab && !self.is_focus_locked {
+            if self.focus_direction == FocusDirection::Next && !self.is_focus_locked {
                 self.id = None;
                 self.give_to_next = true;
-                self.pressed_tab = false;
-            } else if self.pressed_shift_tab && !self.is_focus_locked {
+                self.reset_focus();
+            } else if self.focus_direction == FocusDirection::Previous && !self.is_focus_locked {
                 self.id_next_frame = self.last_interested; // frame-delay so gained_focus works
-                self.pressed_shift_tab = false;
+                self.reset_focus();
             }
-        } else if self.pressed_tab && self.id.is_none() && !self.give_to_next {
+        } else if self.focus_direction == FocusDirection::Next
+            && self.id.is_none()
+            && !self.give_to_next
+        {
             // nothing has focus and the user pressed tab - give focus to the first widgets that wants it:
             self.id = Some(id);
-            self.pressed_tab = false;
+            self.reset_focus();
         }
 
         self.last_interested = Some(id);
+    }
+
+    fn reset_focus(&mut self) {
+        self.focus_direction = FocusDirection::None;
+    }
+
+    fn find_widget_in_direction(&mut self, new_rects: &IdMap<Rect>) -> Option<Id> {
+        // NOTE: `new_rects` here include some widgets _not_ interested in focus.
+
+        /// * negative if `a` is left of `b`
+        /// * positive if `a` is right of `b`
+        /// * zero if the ranges overlap significantly
+        fn range_diff(a: Rangef, b: Rangef) -> f32 {
+            let has_significant_overlap = a.intersection(b).span() >= 0.5 * b.span().min(a.span());
+            if has_significant_overlap {
+                0.0
+            } else {
+                a.center() - b.center()
+            }
+        }
+
+        let Some(focus_id) = self.id else {
+            return None;
+        };
+
+        // In what direction we are looking for the next widget.
+        let search_direction = match self.focus_direction {
+            FocusDirection::Up => Vec2::UP,
+            FocusDirection::Right => Vec2::RIGHT,
+            FocusDirection::Down => Vec2::DOWN,
+            FocusDirection::Left => Vec2::LEFT,
+            _ => {
+                return None;
+            }
+        };
+
+        // Update cache with new rects
+        self.focus_widgets_cache.retain(|id, old_rect| {
+            if let Some(new_rect) = new_rects.get(id) {
+                *old_rect = *new_rect;
+                true // Keep the item
+            } else {
+                false // Remove the item
+            }
+        });
+
+        let Some(current_rect) = self.focus_widgets_cache.get(&focus_id) else {
+            return None;
+        };
+
+        let mut best_score = std::f32::INFINITY;
+        let mut best_id = None;
+
+        for (candidate_id, candidate_rect) in &self.focus_widgets_cache {
+            if Some(*candidate_id) == self.id {
+                continue;
+            }
+
+            // There is a lot of room for improvement here.
+            let to_candidate = vec2(
+                range_diff(candidate_rect.x_range(), current_rect.x_range()),
+                range_diff(candidate_rect.y_range(), current_rect.y_range()),
+            );
+
+            let acos_angle = to_candidate.normalized().dot(search_direction);
+
+            // Only interested in widgets that fall in a 90° cone (±45°)
+            // of the search direction.
+            let is_in_search_cone = 0.5_f32.sqrt() <= acos_angle;
+            if is_in_search_cone {
+                let distance = to_candidate.length();
+
+                // There is a lot of room for improvement here.
+                let score = distance / (acos_angle * acos_angle);
+
+                if score < best_score {
+                    best_score = score;
+                    best_id = Some(*candidate_id);
+                }
+            }
+        }
+
+        best_id
     }
 }
 
@@ -342,6 +495,7 @@ impl Memory {
         prev_input: &crate::input_state::InputState,
         new_input: &crate::data::input::RawInput,
     ) {
+        crate::profile_function!();
         self.interaction.begin_frame(prev_input, new_input);
 
         if !prev_input.pointer.any_down() {
@@ -405,7 +559,7 @@ impl Memory {
     }
 
     /// Is the keyboard focus locked on this widget? If so the focus won't move even if the user presses the tab key.
-    pub fn has_lock_focus(&mut self, id: Id) -> bool {
+    pub fn has_lock_focus(&self, id: Id) -> bool {
         if self.had_focus_last_frame(id) && self.has_focus(id) {
             self.interaction.focus.is_focus_locked
         } else {
@@ -464,10 +618,20 @@ impl Memory {
         self.interaction.drag_id = Some(id);
     }
 
+    #[inline(always)]
+    pub fn stop_dragging(&mut self) {
+        self.interaction.drag_id = None;
+    }
+
     /// Forget window positions, sizes etc.
     /// Can be used to auto-layout windows.
     pub fn reset_areas(&mut self) {
         self.areas = Default::default();
+    }
+
+    /// Obtain the previous rectangle of an area.
+    pub fn area_rect(&self, id: impl Into<Id>) -> Option<Rect> {
+        self.areas.get(id.into()).map(|state| state.rect())
     }
 }
 
@@ -528,8 +692,10 @@ impl Memory {
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Areas {
     areas: IdMap<area::State>,
+
     /// Back-to-front. Top is last.
     order: Vec<LayerId>,
+
     visible_last_frame: ahash::HashSet<LayerId>,
     visible_current_frame: ahash::HashSet<LayerId>,
 

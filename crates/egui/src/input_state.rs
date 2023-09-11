@@ -104,6 +104,11 @@ pub struct InputState {
     /// and will effectively slow down the animation when FPS drops below 10.
     pub stable_dt: f32,
 
+    /// The native window has the keyboard focus (i.e. is receiving key presses).
+    ///
+    /// False when the user alt-tab away from the application, for instance.
+    pub focused: bool,
+
     /// Which modifier keys are down at the start of the frame?
     pub modifiers: Modifiers,
 
@@ -129,6 +134,7 @@ impl Default for InputState {
             unstable_dt: 1.0 / 60.0,
             predicted_dt: 1.0 / 60.0,
             stable_dt: 1.0 / 60.0,
+            focused: false,
             modifiers: Default::default(),
             keys_down: Default::default(),
             events: Default::default(),
@@ -143,6 +149,7 @@ impl InputState {
         mut new: RawInput,
         requested_repaint_last_frame: bool,
     ) -> InputState {
+        crate::profile_function!();
         let time = new.time.unwrap_or(self.time + new.predicted_dt as f64);
         let unstable_dt = (time - self.time) as f32;
 
@@ -189,6 +196,20 @@ impl InputState {
             }
         }
 
+        let mut modifiers = new.modifiers;
+
+        let focused_changed = self.focused != new.focused
+            || new
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::WindowFocused(_)));
+        if focused_changed {
+            // It is very common for keys to become stuck when we alt-tab, or a save-dialog opens by Ctrl+S.
+            // Therefore we clear all the modifiers and down keys here to avoid that.
+            modifiers = Default::default();
+            keys_down = Default::default();
+        }
+
         InputState {
             pointer,
             touch_states: self.touch_states,
@@ -201,7 +222,8 @@ impl InputState {
             unstable_dt,
             predicted_dt: new.predicted_dt,
             stable_dt,
-            modifiers: new.modifiers,
+            focused: new.focused,
+            modifiers,
             keys_down,
             events: new.events.clone(), // TODO(emilk): remove clone() and use raw.events
             raw: new,
@@ -368,7 +390,7 @@ impl InputState {
     /// # egui::__run_test_ui(|ui| {
     /// let mut zoom = 1.0; // no zoom
     /// let mut rotation = 0.0; // no rotation
-    /// let multi_touch = ui.input().multi_touch();
+    /// let multi_touch = ui.input(|i| i.multi_touch());
     /// if let Some(multi_touch) = multi_touch {
     ///     zoom *= multi_touch.zoom_delta;
     ///     rotation += multi_touch.rotation_delta;
@@ -447,9 +469,10 @@ impl InputState {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Click {
     pub pos: Pos2,
-    pub button: PointerButton,
+
     /// 1 or 2 (double-click) or 3 (triple-click)
     pub count: u32,
+
     /// Allows you to check for e.g. shift-click
     pub modifiers: Modifiers,
 }
@@ -471,7 +494,10 @@ pub(crate) enum PointerEvent {
         position: Pos2,
         button: PointerButton,
     },
-    Released(Option<Click>),
+    Released {
+        click: Option<Click>,
+        button: PointerButton,
+    },
 }
 
 impl PointerEvent {
@@ -480,11 +506,11 @@ impl PointerEvent {
     }
 
     pub fn is_release(&self) -> bool {
-        matches!(self, PointerEvent::Released(_))
+        matches!(self, PointerEvent::Released { .. })
     }
 
     pub fn is_click(&self) -> bool {
-        matches!(self, PointerEvent::Released(Some(_click)))
+        matches!(self, PointerEvent::Released { click: Some(_), .. })
     }
 }
 
@@ -541,6 +567,10 @@ pub struct PointerState {
     /// Used to check for triple-clicks.
     last_last_click_time: f64,
 
+    /// When was the pointer last moved?
+    /// Used for things like showing hover ui/tooltip with a delay.
+    last_move_time: f64,
+
     /// All button events that occurred this frame
     pub(crate) pointer_events: Vec<PointerEvent>,
 }
@@ -560,6 +590,7 @@ impl Default for PointerState {
             has_moved_too_much_for_a_click: false,
             last_click_time: std::f64::NEG_INFINITY,
             last_last_click_time: std::f64::NEG_INFINITY,
+            last_move_time: std::f64::NEG_INFINITY,
             pointer_events: vec![],
         }
     }
@@ -639,7 +670,6 @@ impl PointerState {
 
                             Some(Click {
                                 pos,
-                                button,
                                 count,
                                 modifiers,
                             })
@@ -647,7 +677,8 @@ impl PointerState {
                             None
                         };
 
-                        self.pointer_events.push(PointerEvent::Released(click));
+                        self.pointer_events
+                            .push(PointerEvent::Released { click, button });
 
                         self.press_origin = None;
                         self.press_start_time = None;
@@ -684,6 +715,9 @@ impl PointerState {
         } else {
             Vec2::default()
         };
+        if self.velocity != Vec2::ZERO {
+            self.last_move_time = time;
+        }
 
         self
     }
@@ -721,7 +755,7 @@ impl PointerState {
     /// Latest reported pointer position.
     /// When tapping a touch screen, this will be `None`.
     #[inline(always)]
-    pub(crate) fn latest_pos(&self) -> Option<Pos2> {
+    pub fn latest_pos(&self) -> Option<Pos2> {
         self.latest_pos
     }
 
@@ -763,6 +797,12 @@ impl PointerState {
         self.velocity != Vec2::ZERO
     }
 
+    /// How long has it been (in seconds) since the pointer was last moved?
+    #[inline(always)]
+    pub fn time_since_last_movement(&self) -> f64 {
+        self.time - self.last_move_time
+    }
+
     /// Was any pointer button pressed (`!down -> down`) this frame?
     /// This can sometimes return `true` even if `any_down() == false`
     /// because a press can be shorted than one frame.
@@ -775,11 +815,28 @@ impl PointerState {
         self.pointer_events.iter().any(|event| event.is_release())
     }
 
+    /// Was the button given pressed this frame?
+    pub fn button_pressed(&self, button: PointerButton) -> bool {
+        self.pointer_events
+            .iter()
+            .any(|event| matches!(event, &PointerEvent::Pressed{button: b, ..} if button == b))
+    }
+
     /// Was the button given released this frame?
     pub fn button_released(&self, button: PointerButton) -> bool {
         self.pointer_events
             .iter()
-            .any(|event| matches!(event, &PointerEvent::Released(Some(Click{button: b, ..})) if button == b))
+            .any(|event| matches!(event, &PointerEvent::Released{button: b, ..} if button == b))
+    }
+
+    /// Was the primary button pressed this frame?
+    pub fn primary_pressed(&self) -> bool {
+        self.button_pressed(PointerButton::Primary)
+    }
+
+    /// Was the secondary button pressed this frame?
+    pub fn secondary_pressed(&self) -> bool {
+        self.button_pressed(PointerButton::Secondary)
     }
 
     /// Was the primary button released this frame?
@@ -811,16 +868,28 @@ impl PointerState {
 
     /// Was the button given double clicked this frame?
     pub fn button_double_clicked(&self, button: PointerButton) -> bool {
-        self.pointer_events
-            .iter()
-            .any(|event| matches!(&event, PointerEvent::Released(Some(click)) if click.button == button && click.is_double()))
+        self.pointer_events.iter().any(|event| {
+            matches!(
+                &event,
+                PointerEvent::Released {
+                    click: Some(click),
+                    button: b,
+                } if *b == button && click.is_double()
+            )
+        })
     }
 
     /// Was the button given triple clicked this frame?
     pub fn button_triple_clicked(&self, button: PointerButton) -> bool {
-        self.pointer_events
-            .iter()
-            .any(|event| matches!(&event, PointerEvent::Released(Some(click)) if click.button == button && click.is_triple()))
+        self.pointer_events.iter().any(|event| {
+            matches!(
+                &event,
+                PointerEvent::Released {
+                    click: Some(click),
+                    button: b,
+                } if *b == button && click.is_triple()
+            )
+        })
     }
 
     /// Was the primary button clicked this frame?
@@ -833,18 +902,6 @@ impl PointerState {
         self.button_clicked(PointerButton::Secondary)
     }
 
-    // /// Was this button pressed (`!down -> down`) this frame?
-    // /// This can sometimes return `true` even if `any_down() == false`
-    // /// because a press can be shorted than one frame.
-    // pub fn button_pressed(&self, button: PointerButton) -> bool {
-    //     self.pointer_events.iter().any(|event| event.is_press())
-    // }
-
-    // /// Was this button released (`down -> !down`) this frame?
-    // pub fn button_released(&self, button: PointerButton) -> bool {
-    //     self.pointer_events.iter().any(|event| event.is_release())
-    // }
-
     /// Is this button currently down?
     #[inline(always)]
     pub fn button_down(&self, button: PointerButton) -> bool {
@@ -852,8 +909,9 @@ impl PointerState {
     }
 
     /// If the pointer button is down, will it register as a click when released?
-    #[inline(always)]
-    pub(crate) fn could_any_button_be_click(&self) -> bool {
+    ///
+    /// See also [`Self::is_decidedly_dragging`].
+    pub fn could_any_button_be_click(&self) -> bool {
         if !self.any_down() {
             return false;
         }
@@ -869,6 +927,22 @@ impl PointerState {
         }
 
         true
+    }
+
+    /// Just because the mouse is down doesn't mean we are dragging.
+    /// We could be at the start of a click.
+    /// But if the mouse is down long enough, or has moved far enough,
+    /// then we consider it a drag.
+    ///
+    /// This function can return true on the same frame the drag is released,
+    /// but NOT on the first frame it was started.
+    ///
+    /// See also [`Self::could_any_button_be_click`].
+    pub fn is_decidedly_dragging(&self) -> bool {
+        (self.any_down() || self.any_released())
+            && !self.any_pressed()
+            && !self.could_any_button_be_click()
+            && !self.any_click()
     }
 
     /// Is the primary button currently down?
@@ -905,6 +979,7 @@ impl InputState {
             unstable_dt,
             predicted_dt,
             stable_dt,
+            focused,
             modifiers,
             keys_down,
             events,
@@ -930,29 +1005,28 @@ impl InputState {
             });
         }
 
-        ui.label(format!("scroll_delta: {:?} points", scroll_delta));
-        ui.label(format!("zoom_factor_delta: {:4.2}x", zoom_factor_delta));
-        ui.label(format!("screen_rect: {:?} points", screen_rect));
+        ui.label(format!("scroll_delta: {scroll_delta:?} points"));
+        ui.label(format!("zoom_factor_delta: {zoom_factor_delta:4.2}x"));
+        ui.label(format!("screen_rect: {screen_rect:?} points"));
         ui.label(format!(
-            "{} physical pixels for each logical point",
-            pixels_per_point
+            "{pixels_per_point} physical pixels for each logical point"
         ));
         ui.label(format!(
-            "max texture size (on each side): {}",
-            max_texture_side
+            "max texture size (on each side): {max_texture_side}"
         ));
-        ui.label(format!("time: {:.3} s", time));
+        ui.label(format!("time: {time:.3} s"));
         ui.label(format!(
             "time since previous frame: {:.1} ms",
             1e3 * unstable_dt
         ));
         ui.label(format!("predicted_dt: {:.1} ms", 1e3 * predicted_dt));
         ui.label(format!("stable_dt:    {:.1} ms", 1e3 * stable_dt));
-        ui.label(format!("modifiers: {:#?}", modifiers));
-        ui.label(format!("keys_down: {:?}", keys_down));
+        ui.label(format!("focused:   {focused}"));
+        ui.label(format!("modifiers: {modifiers:#?}"));
+        ui.label(format!("keys_down: {keys_down:?}"));
         ui.scope(|ui| {
             ui.set_min_height(150.0);
-            ui.label(format!("events: {:#?}", events))
+            ui.label(format!("events: {events:#?}"))
                 .on_hover_text("key presses etc");
         });
     }
@@ -974,24 +1048,25 @@ impl PointerState {
             last_click_time,
             last_last_click_time,
             pointer_events,
+            last_move_time,
         } = self;
 
-        ui.label(format!("latest_pos: {:?}", latest_pos));
-        ui.label(format!("interact_pos: {:?}", interact_pos));
-        ui.label(format!("delta: {:?}", delta));
+        ui.label(format!("latest_pos: {latest_pos:?}"));
+        ui.label(format!("interact_pos: {interact_pos:?}"));
+        ui.label(format!("delta: {delta:?}"));
         ui.label(format!(
             "velocity: [{:3.0} {:3.0}] points/sec",
             velocity.x, velocity.y
         ));
-        ui.label(format!("down: {:#?}", down));
-        ui.label(format!("press_origin: {:?}", press_origin));
-        ui.label(format!("press_start_time: {:?} s", press_start_time));
+        ui.label(format!("down: {down:#?}"));
+        ui.label(format!("press_origin: {press_origin:?}"));
+        ui.label(format!("press_start_time: {press_start_time:?} s"));
         ui.label(format!(
-            "has_moved_too_much_for_a_click: {}",
-            has_moved_too_much_for_a_click
+            "has_moved_too_much_for_a_click: {has_moved_too_much_for_a_click}"
         ));
-        ui.label(format!("last_click_time: {:#?}", last_click_time));
-        ui.label(format!("last_last_click_time: {:#?}", last_last_click_time));
-        ui.label(format!("pointer_events: {:?}", pointer_events));
+        ui.label(format!("last_click_time: {last_click_time:#?}"));
+        ui.label(format!("last_last_click_time: {last_last_click_time:#?}"));
+        ui.label(format!("last_move_time: {last_move_time:#?}"));
+        ui.label(format!("pointer_events: {pointer_events:?}"));
     }
 }

@@ -12,7 +12,9 @@ enum ProgressBarText {
 pub struct ProgressBar {
     progress: f32,
     desired_width: Option<f32>,
+    desired_height: Option<f32>,
     text: Option<ProgressBarText>,
+    fill: Option<Color32>,
     animate: bool,
 }
 
@@ -22,7 +24,9 @@ impl ProgressBar {
         Self {
             progress: progress.clamp(0.0, 1.0),
             desired_width: None,
+            desired_height: None,
             text: None,
+            fill: None,
             animate: false,
         }
     }
@@ -30,6 +34,18 @@ impl ProgressBar {
     /// The desired width of the bar. Will use all horizontal space if not set.
     pub fn desired_width(mut self, desired_width: f32) -> Self {
         self.desired_width = Some(desired_width);
+        self
+    }
+
+    /// The desired height of the bar. Will use the default interaction size if not set.
+    pub fn desired_height(mut self, desired_height: f32) -> Self {
+        self.desired_height = Some(desired_height);
+        self
+    }
+
+    /// The fill color of the bar.
+    pub fn fill(mut self, color: Color32) -> Self {
+        self.fill = Some(color);
         self
     }
 
@@ -59,7 +75,9 @@ impl Widget for ProgressBar {
         let ProgressBar {
             progress,
             desired_width,
+            desired_height,
             text,
+            fill,
             animate,
         } = self;
 
@@ -67,7 +85,7 @@ impl Widget for ProgressBar {
 
         let desired_width =
             desired_width.unwrap_or_else(|| ui.available_size_before_wrap().x.at_least(96.0));
-        let height = ui.spacing().interact_size.y;
+        let height = desired_height.unwrap_or(ui.spacing().interact_size.y);
         let (outer_rect, response) =
             ui.allocate_exact_size(vec2(desired_width, height), Sense::hover());
 
@@ -90,7 +108,8 @@ impl Widget for ProgressBar {
 
             let (dark, bright) = (0.7, 1.0);
             let color_factor = if animate {
-                lerp(dark..=bright, ui.input().time.cos().abs())
+                let time = ui.input(|i| i.time);
+                lerp(dark..=bright, time.cos().abs())
             } else {
                 bright
             };
@@ -98,14 +117,17 @@ impl Widget for ProgressBar {
             ui.painter().rect(
                 inner_rect,
                 rounding,
-                Color32::from(Rgba::from(visuals.selection.bg_fill) * color_factor as f32),
+                Color32::from(
+                    Rgba::from(fill.unwrap_or(visuals.selection.bg_fill)) * color_factor as f32,
+                ),
                 Stroke::NONE,
             );
 
             if animate {
                 let n_points = 20;
-                let start_angle = ui.input().time * std::f64::consts::TAU;
-                let end_angle = start_angle + 240f64.to_radians() * ui.input().time.sin();
+                let time = ui.input(|i| i.time);
+                let start_angle = time * std::f64::consts::TAU;
+                let end_angle = start_angle + 240f64.to_radians() * time.sin();
                 let circle_radius = rounding - 2.0;
                 let points: Vec<Pos2> = (0..n_points)
                     .map(|i| {
@@ -116,10 +138,8 @@ impl Widget for ProgressBar {
                             + vec2(-rounding, 0.0)
                     })
                     .collect();
-                ui.painter().add(Shape::line(
-                    points,
-                    Stroke::new(2.0, visuals.faint_bg_color),
-                ));
+                ui.painter()
+                    .add(Shape::line(points, Stroke::new(2.0, visuals.text_color())));
             }
 
             if let Some(text_kind) = text {

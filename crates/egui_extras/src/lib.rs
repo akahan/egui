@@ -8,12 +8,14 @@
 
 #![allow(clippy::float_cmp)]
 #![allow(clippy::manual_range_contains)]
+#![forbid(unsafe_code)]
 
 #[cfg(feature = "chrono")]
 mod datepicker;
 
 pub mod image;
 mod layout;
+pub mod loaders;
 mod sizing;
 mod strip;
 mod table;
@@ -27,13 +29,45 @@ pub use crate::sizing::Size;
 pub use crate::strip::*;
 pub use crate::table::*;
 
-/// Log an error with either `tracing` or `eprintln`
+// ---------------------------------------------------------------------------
+
+mod profiling_scopes {
+    #![allow(unused_macros)]
+    #![allow(unused_imports)]
+
+    /// Profiling macro for feature "puffin"
+    macro_rules! profile_function {
+        ($($arg: tt)*) => {
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
+            #[cfg(feature = "puffin")]
+            puffin::profile_function!($($arg)*);
+        };
+    }
+    pub(crate) use profile_function;
+
+    /// Profiling macro for feature "puffin"
+    macro_rules! profile_scope {
+        ($($arg: tt)*) => {
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!($($arg)*);
+        };
+    }
+    pub(crate) use profile_scope;
+}
+
+#[allow(unused_imports)]
+pub(crate) use profiling_scopes::*;
+
+// ---------------------------------------------------------------------------
+
+/// Log an error with either `log` or `eprintln`
 macro_rules! log_err {
     ($fmt: literal, $($arg: tt)*) => {{
-        #[cfg(feature = "tracing")]
-        tracing::error!($fmt, $($arg)*);
+        #[cfg(feature = "log")]
+        log::error!($fmt, $($arg)*);
 
-        #[cfg(not(feature = "tracing"))]
+        #[cfg(not(feature = "log"))]
         eprintln!(
             concat!("egui_extras: ", $fmt), $($arg)*
         );
@@ -52,3 +86,31 @@ macro_rules! log_or_panic {
     }};
 }
 pub(crate) use log_or_panic;
+
+#[allow(unused_macros)]
+macro_rules! log_warn {
+    ($fmt: literal) => {$crate::log_warn!($fmt,)};
+    ($fmt: literal, $($arg: tt)*) => {{
+        #[cfg(feature = "log")]
+        log::warn!($fmt, $($arg)*);
+
+        #[cfg(not(feature = "log"))]
+        println!(
+            concat!("egui_extras: warning: ", $fmt), $($arg)*
+        )
+    }};
+}
+
+#[allow(unused_imports)]
+pub(crate) use log_warn;
+
+#[allow(unused_macros)]
+macro_rules! log_trace {
+    ($fmt: literal) => {$crate::log_trace!($fmt,)};
+    ($fmt: literal, $($arg: tt)*) => {{
+        #[cfg(feature = "log")]
+        log::trace!($fmt, $($arg)*);
+    }};
+}
+#[allow(unused_imports)]
+pub(crate) use log_trace;

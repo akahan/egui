@@ -25,7 +25,7 @@
 //! fn ui_counter(ui: &mut egui::Ui, counter: &mut i32) {
 //!     // Put the buttons and label on the same row:
 //!     ui.horizontal(|ui| {
-//!         if ui.button("-").clicked() {
+//!         if ui.button("−").clicked() {
 //!             *counter -= 1;
 //!         }
 //!         ui.label(counter.to_string());
@@ -92,27 +92,29 @@
 //! # });
 //! ```
 //!
-//! ## Conventions
+//! ## Coordinate system
+//! The left-top corner of the screen is `(0.0, 0.0)`,
+//! with X increasing to the right and Y increasing downwards.
 //!
-//! Conventions unless otherwise specified:
+//! `egui` uses logical _points_ as its coordinate system.
+//! Those related to physical _pixels_ by the `pixels_per_point` scale factor.
+//! For example, a high-dpi screeen can have `pixels_per_point = 2.0`,
+//! meaning there are two physical screen pixels for each logical point.
 //!
-//! * angles are in radians
-//! * `Vec2::X` is right and `Vec2::Y` is down.
-//! * `Pos2::ZERO` is left top.
-//! * Positions and sizes are measured in _points_. Each point may consist of many physical pixels.
+//! Angles are in radians, and are measured clockwise from the X-axis, which has angle=0.
 //!
 //! # Integrating with egui
 //!
 //! Most likely you are using an existing `egui` backend/integration such as [`eframe`](https://docs.rs/eframe), [`bevy_egui`](https://docs.rs/bevy_egui),
 //! or [`egui-miniquad`](https://github.com/not-fl3/egui-miniquad),
-//! but if you want to integrate `egui` into a new game engine, this is the section for you.
+//! but if you want to integrate `egui` into a new game engine or graphics backend, this is the section for you.
 //!
-//! To write your own integration for egui you need to do this:
+//! You need to collect [`RawInput`] and handle [`FullOutput`]. The basic structure is this:
 //!
 //! ``` no_run
 //! # fn handle_platform_output(_: egui::PlatformOutput) {}
 //! # fn gather_input() -> egui::RawInput { egui::RawInput::default() }
-//! # fn paint(textures_detla: egui::TexturesDelta, _: Vec<egui::ClippedPrimitive>) {}
+//! # fn paint(textures_delta: egui::TexturesDelta, _: Vec<egui::ClippedPrimitive>) {}
 //! let mut ctx = egui::Context::default();
 //!
 //! // Game loop:
@@ -132,6 +134,31 @@
 //!     paint(full_output.textures_delta, clipped_primitives);
 //! }
 //! ```
+//!
+//! For a reference OpenGL renderer, see [the `egui_glow` painter](https://github.com/emilk/egui/blob/master/crates/egui_glow/src/painter.rs).
+//!
+//!
+//! ### Debugging your renderer
+//!
+//! #### Things look jagged
+//!
+//! * Turn off backface culling.
+//!
+//! #### My text is blurry
+//!
+//! * Make sure you set the proper `pixels_per_point` in the input to egui.
+//! * Make sure the texture sampler is not off by half a pixel. Try nearest-neighbor sampler to check.
+//!
+//! #### My windows are too transparent or too dark
+//!
+//! * egui uses premultiplied alpha, so make sure your blending function is `(ONE, ONE_MINUS_SRC_ALPHA)`.
+//! * Make sure your texture sampler is clamped (`GL_CLAMP_TO_EDGE`).
+//! * egui prefers linear color spaces for all blending so:
+//!   * Use an sRGBA-aware texture if available (e.g. `GL_SRGB8_ALPHA8`).
+//!     * Otherwise: remember to decode gamma in the fragment shader.
+//!   * Decode the gamma of the incoming vertex colors in your vertex shader.
+//!   * Turn on sRGBA/linear framebuffer if available (`GL_FRAMEBUFFER_SRGB`).
+//!     * Otherwise: gamma-encode the colors before you write them again.
 //!
 //!
 //! # Understanding immediate mode
@@ -298,6 +325,7 @@
 
 #![allow(clippy::float_cmp)]
 #![allow(clippy::manual_range_contains)]
+#![forbid(unsafe_code)]
 
 mod animation_manager;
 pub mod containers;
@@ -311,6 +339,7 @@ mod input_state;
 pub mod introspection;
 pub mod layers;
 mod layout;
+pub mod load;
 mod memory;
 pub mod menu;
 pub mod os;
@@ -327,6 +356,8 @@ pub mod widgets;
 #[cfg(feature = "accesskit")]
 pub use accesskit;
 
+pub use ahash;
+
 pub use epaint;
 pub use epaint::ecolor;
 pub use epaint::emath;
@@ -334,7 +365,9 @@ pub use epaint::emath;
 #[cfg(feature = "color-hex")]
 pub use ecolor::hex_color;
 pub use ecolor::{Color32, Rgba};
-pub use emath::{lerp, pos2, remap, remap_clamp, vec2, Align, Align2, NumExt, Pos2, Rect, Vec2};
+pub use emath::{
+    lerp, pos2, remap, remap_clamp, vec2, Align, Align2, NumExt, Pos2, Rangef, Rect, Vec2,
+};
 pub use epaint::{
     mutex,
     text::{FontData, FontDefinitions, FontFamily, FontId, FontTweak},
@@ -347,27 +380,28 @@ pub mod text {
     pub use crate::text_edit::CCursorRange;
     pub use epaint::text::{
         cursor::CCursor, FontData, FontDefinitions, FontFamily, Fonts, Galley, LayoutJob,
-        LayoutSection, TextFormat, TAB_SIZE,
+        LayoutSection, TextFormat, TextWrapping, TAB_SIZE,
     };
 }
 
 pub use {
     containers::*,
-    context::Context,
+    context::{Context, RequestRepaintInfo},
     data::{
         input::*,
-        output::{self, CursorIcon, FullOutput, PlatformOutput, WidgetInfo},
+        output::{self, CursorIcon, FullOutput, PlatformOutput, UserAttentionType, WidgetInfo},
     },
     grid::Grid,
     id::{Id, IdMap},
     input_state::{InputState, MultiTouchInfo, PointerState},
     layers::{LayerId, Order},
     layout::*,
-    memory::Memory,
+    load::SizeHint,
+    memory::{Memory, Options},
     painter::Painter,
     response::{InnerResponse, Response},
     sense::Sense,
-    style::{FontSelection, Style, TextStyle, Visuals},
+    style::{FontSelection, Margin, Style, TextStyle, Visuals},
     text::{Galley, TextFormat},
     ui::Ui,
     widget_text::{RichText, WidgetText},
@@ -464,6 +498,9 @@ macro_rules! egui_assert {
 
 // ----------------------------------------------------------------------------
 
+/// The minus character: <https://www.compart.com/en/unicode/U+2212>
+pub(crate) const MINUS_CHAR_STR: &str = "−";
+
 /// The default egui fonts supports around 1216 emojis in total.
 /// Here are some of the most useful:
 /// ∞⊗⎗⎘⎙⏏⏴⏵⏶⏷
@@ -513,18 +550,30 @@ pub mod special_emojis {
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum WidgetType {
     Label, // TODO(emilk): emit Label events
+
     /// e.g. a hyperlink
     Link,
+
     TextEdit,
+
     Button,
+
     Checkbox,
+
     RadioButton,
+
     SelectableLabel,
+
     ComboBox,
+
     Slider,
+
     DragValue,
+
     ColorButton,
+
     ImageButton,
+
     CollapsingHeader,
 
     /// If you cannot fit any of the above slots.
@@ -560,24 +609,31 @@ pub fn accesskit_root_id() -> Id {
     Id::new("accesskit_root")
 }
 
-/// Return a tree update that the egui integration should provide to the
-/// AccessKit adapter if it cannot immediately run the egui application
-/// to get a full tree update after running [`Context::enable_accesskit`].
-#[cfg(feature = "accesskit")]
-pub fn accesskit_placeholder_tree_update() -> accesskit::TreeUpdate {
-    use accesskit::{Node, Role, Tree, TreeUpdate};
-    use std::sync::Arc;
+// ---------------------------------------------------------------------------
 
-    let root_id = accesskit_root_id().accesskit_id();
-    TreeUpdate {
-        nodes: vec![(
-            root_id,
-            Arc::new(Node {
-                role: Role::Window,
-                ..Default::default()
-            }),
-        )],
-        tree: Some(Tree::new(root_id)),
-        focus: None,
+mod profiling_scopes {
+    #![allow(unused_macros)]
+    #![allow(unused_imports)]
+
+    /// Profiling macro for feature "puffin"
+    macro_rules! profile_function {
+        ($($arg: tt)*) => {
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
+            #[cfg(feature = "puffin")]
+            puffin::profile_function!($($arg)*);
+        };
     }
+    pub(crate) use profile_function;
+
+    /// Profiling macro for feature "puffin"
+    macro_rules! profile_scope {
+        ($($arg: tt)*) => {
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!($($arg)*);
+        };
+    }
+    pub(crate) use profile_scope;
 }
+
+pub(crate) use profiling_scopes::*;

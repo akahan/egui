@@ -72,13 +72,13 @@ impl<'a> StripBuilder<'a> {
         self
     }
 
-    /// Allocate space for for one column/row.
+    /// Allocate space for one column/row.
     pub fn size(mut self, size: Size) -> Self {
         self.sizing.add(size);
         self
     }
 
-    /// Allocate space for for several columns/rows at once.
+    /// Allocate space for several columns/rows at once.
     pub fn sizes(mut self, size: Size, count: usize) -> Self {
         for _ in 0..count {
             self.sizing.add(size);
@@ -144,6 +144,7 @@ pub struct Strip<'a, 'b> {
 }
 
 impl<'a, 'b> Strip<'a, 'b> {
+    #[cfg_attr(debug_assertions, track_caller)]
     fn next_cell_size(&mut self) -> (CellSize, CellSize) {
         let size = if let Some(size) = self.sizes.get(self.size_index) {
             self.size_index += 1;
@@ -163,6 +164,7 @@ impl<'a, 'b> Strip<'a, 'b> {
     }
 
     /// Add cell contents.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn cell(&mut self, add_contents: impl FnOnce(&mut Ui)) {
         let (width, height) = self.next_cell_size();
         let striped = false;
@@ -171,6 +173,7 @@ impl<'a, 'b> Strip<'a, 'b> {
     }
 
     /// Add an empty cell.
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn empty(&mut self) {
         let (width, height) = self.next_cell_size();
         self.layout.empty(width, height);
