@@ -13,6 +13,10 @@ use crate::*;
 /// of `min` and `max` are swapped. These are usually a sign of an error.
 ///
 /// Normally the unit is points (logical pixels) in screen space coordinates.
+///
+/// `Rect` does NOT implement `Default`, because there is no obvious default value.
+/// [`Rect::ZERO`] may seem reasonable, but when used as a bounding box, [`Rect::NOTHING`]
+/// is a better default - so be explicit instead!
 #[repr(C)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -144,6 +148,34 @@ impl Rect {
         let mut rect = Self::EVERYTHING;
         rect.set_bottom(bottom_y);
         rect
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn with_min_x(mut self, min_x: f32) -> Self {
+        self.min.x = min_x;
+        self
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn with_min_y(mut self, min_y: f32) -> Self {
+        self.min.y = min_y;
+        self
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn with_max_x(mut self, max_x: f32) -> Self {
+        self.max.x = max_x;
+        self
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn with_max_y(mut self, max_y: f32) -> Self {
+        self.max.y = max_y;
+        self
     }
 
     /// Expand by this much in each direction, keeping the center
@@ -377,13 +409,7 @@ impl Rect {
 
     /// Linearly interpolate so that `[0, 0]` is [`Self::min`] and
     /// `[1, 1]` is [`Self::max`].
-    #[deprecated = "Use `lerp_inside` instead"]
-    pub fn lerp(&self, t: Vec2) -> Pos2 {
-        self.lerp_inside(t)
-    }
-
-    /// Linearly interpolate so that `[0, 0]` is [`Self::min`] and
-    /// `[1, 1]` is [`Self::max`].
+    #[inline]
     pub fn lerp_inside(&self, t: Vec2) -> Pos2 {
         Pos2 {
             x: lerp(self.min.x..=self.max.x, t.x),
@@ -392,6 +418,7 @@ impl Rect {
     }
 
     /// Linearly self towards other rect.
+    #[inline]
     pub fn lerp_towards(&self, other: &Rect, t: f32) -> Self {
         Self {
             min: self.min.lerp(other.min, t),
@@ -586,7 +613,44 @@ impl std::fmt::Debug for Rect {
 
 /// from (min, max) or (left top, right bottom)
 impl From<[Pos2; 2]> for Rect {
+    #[inline]
     fn from([min, max]: [Pos2; 2]) -> Self {
         Self { min, max }
+    }
+}
+
+impl Mul<f32> for Rect {
+    type Output = Rect;
+
+    #[inline]
+    fn mul(self, factor: f32) -> Rect {
+        Rect {
+            min: self.min * factor,
+            max: self.max * factor,
+        }
+    }
+}
+
+impl Mul<Rect> for f32 {
+    type Output = Rect;
+
+    #[inline]
+    fn mul(self, vec: Rect) -> Rect {
+        Rect {
+            min: self * vec.min,
+            max: self * vec.max,
+        }
+    }
+}
+
+impl Div<f32> for Rect {
+    type Output = Rect;
+
+    #[inline]
+    fn div(self, factor: f32) -> Rect {
+        Rect {
+            min: self.min / factor,
+            max: self.max / factor,
+        }
     }
 }

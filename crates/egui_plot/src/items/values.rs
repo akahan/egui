@@ -47,6 +47,7 @@ impl PlotPoint {
 
 // ----------------------------------------------------------------------------
 
+/// Solid, dotted, dashed, etc.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum LineStyle {
     Solid,
@@ -244,8 +245,7 @@ impl PlotPoints {
         (0..points)
             .map(|i| {
                 let t = start + i as f64 * increment;
-                let (x, y) = function(t);
-                [x, y]
+                function(t).into()
             })
             .collect()
     }
@@ -319,6 +319,7 @@ impl PlotPoints {
 
 // ----------------------------------------------------------------------------
 
+/// Circle, Diamond, Square, Cross, …
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum MarkerShape {
     Circle,

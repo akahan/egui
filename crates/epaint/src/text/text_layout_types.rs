@@ -394,7 +394,7 @@ impl Default for TextWrapping {
 }
 
 impl TextWrapping {
-    /// A row can be as long as it need to be
+    /// A row can be as long as it need to be.
     pub fn no_max_width() -> Self {
         Self {
             max_width: f32::INFINITY,
@@ -402,8 +402,8 @@ impl TextWrapping {
         }
     }
 
-    /// Elide text that doesn't fit within the given width.
-    pub fn elide_at_width(max_width: f32) -> Self {
+    /// Elide text that doesn't fit within the given width, replaced with `…`.
+    pub fn truncate_at_width(max_width: f32) -> Self {
         Self {
             max_width,
             max_rows: 1,
@@ -475,6 +475,9 @@ pub struct Galley {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Row {
+    /// This is included in case there are no glyphs
+    pub section_index_at_start: u32,
+
     /// One for each `char`.
     pub glyphs: Vec<Glyph>,
 
@@ -506,8 +509,9 @@ pub struct RowVisuals {
     /// Does NOT include leading or trailing whitespace glyphs!!
     pub mesh_bounds: Rect,
 
-    /// The range of vertices in the mesh the contain glyphs.
-    /// Before comes backgrounds (if any), and after any underlines and strikethrough.
+    /// The range of vertices in the mesh that contain glyphs (as opposed to background, underlines, strikethorugh, etc).
+    ///
+    /// The glyph vertices comes before backgrounds (if any), and after any underlines and strikethrough.
     pub glyph_vertex_range: Range<usize>,
 }
 
@@ -561,6 +565,11 @@ impl Glyph {
 // ----------------------------------------------------------------------------
 
 impl Row {
+    /// The text on this row, excluding the implicit `\n` if any.
+    pub fn text(&self) -> String {
+        self.glyphs.iter().map(|g| g.chr).collect()
+    }
+
     /// Excludes the implicit `\n` after the [`Row`], if any.
     #[inline]
     pub fn char_count_excluding_newline(&self) -> usize {

@@ -238,6 +238,15 @@ impl From<Arc<ColorImage>> for ImageData {
     }
 }
 
+impl std::fmt::Debug for ColorImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ColorImage")
+            .field("size", &self.size)
+            .field("pixel-count", &self.pixels.len())
+            .finish_non_exhaustive()
+    }
+}
+
 // ----------------------------------------------------------------------------
 
 /// A single-channel image designed for the font texture.
@@ -280,6 +289,7 @@ impl FontImage {
     /// `gamma` should normally be set to `None`.
     ///
     /// If you are having problems with text looking skinny and pixelated, try using a low gamma, e.g. `0.4`.
+    #[inline]
     pub fn srgba_pixels(
         &'_ self,
         gamma: Option<f32>,
@@ -338,8 +348,9 @@ impl From<FontImage> for ImageData {
     }
 }
 
+#[inline]
 fn fast_round(r: f32) -> u8 {
-    (r + 0.5).floor() as _ // rust does a saturating cast since 1.45
+    (r + 0.5) as _ // rust does a saturating cast since 1.45
 }
 
 // ----------------------------------------------------------------------------

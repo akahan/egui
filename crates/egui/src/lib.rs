@@ -12,6 +12,10 @@
 //! Then you add a [`Window`] or a [`SidePanel`] to get a [`Ui`], which is what you'll be using to add all the buttons and labels that you need.
 //!
 //!
+//! ## Feature flags
+#![cfg_attr(feature = "document-features", doc = document_features::document_features!())]
+//!
+//!
 //! # Using egui
 //!
 //! To see what is possible to build with egui you can check out the online demo at <https://www.egui.rs/#demo>.
@@ -84,13 +88,17 @@
 //! ui.separator();
 //!
 //! # let my_image = egui::TextureId::default();
-//! ui.image(my_image, [640.0, 480.0]);
+//! ui.image((my_image, egui::Vec2::new(640.0, 480.0)));
 //!
 //! ui.collapsing("Click to see what is hidden!", |ui| {
 //!     ui.label("Not much, as it turns out");
 //! });
 //! # });
 //! ```
+//!
+//! ## Viewports
+//! Some egui backends support multiple _viewports_, which is what egui calls the native OS windows it resides in.
+//! See [`crate::viewport`] for more information.
 //!
 //! ## Coordinate system
 //! The left-top corner of the screen is `(0.0, 0.0)`,
@@ -130,7 +138,7 @@
 //!         });
 //!     });
 //!     handle_platform_output(full_output.platform_output);
-//!     let clipped_primitives = ctx.tessellate(full_output.shapes); // create triangles to paint
+//!     let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
 //!     paint(full_output.textures_delta, clipped_primitives);
 //! }
 //! ```
@@ -163,7 +171,14 @@
 //!
 //! # Understanding immediate mode
 //!
-//! `egui` is an immediate mode GUI library. It is useful to fully grok what "immediate mode" implies.
+//! `egui` is an immediate mode GUI library.
+//!
+//! Immediate mode has its roots in gaming, where everything on the screen is painted at the
+//! display refresh rate, i.e. at 60+ frames per second.
+//! In immediate mode GUIs, the entire interface is laid out and painted at the same high rate.
+//! This makes immediate mode GUIs especially well suited for highly interactive applications.
+//!
+//! It is useful to fully grok what "immediate mode" implies.
 //!
 //! Here is an example to illustrate it:
 //!
@@ -198,7 +213,7 @@
 //! # });
 //! ```
 //!
-//! Here egui will read `value` to display the slider, then look if the mouse is dragging the slider and if so change the `value`.
+//! Here egui will read `value` (an `f32`) to display the slider, then look if the mouse is dragging the slider and if so change the `value`.
 //! Note that `egui` does not store the slider value for you - it only displays the current value, and changes it
 //! by how much the slider has been dragged in the previous few milliseconds.
 //! This means it is responsibility of the egui user to store the state (`value`) so that it persists between frames.
@@ -318,14 +333,11 @@
 //! }); // the temporary settings are reverted here
 //! # });
 //! ```
-//!
-//! ## Feature flags
-#![cfg_attr(feature = "document-features", doc = document_features::document_features!())]
-//!
 
 #![allow(clippy::float_cmp)]
 #![allow(clippy::manual_range_contains)]
-#![forbid(unsafe_code)]
+#![cfg_attr(feature = "puffin", deny(unsafe_code))]
+#![cfg_attr(not(feature = "puffin"), forbid(unsafe_code))]
 
 mod animation_manager;
 pub mod containers;
@@ -350,8 +362,13 @@ mod sense;
 pub mod style;
 mod ui;
 pub mod util;
+pub mod viewport;
 pub mod widget_text;
 pub mod widgets;
+
+#[cfg(feature = "callstack")]
+#[cfg(debug_assertions)]
+mod callstack;
 
 #[cfg(feature = "accesskit")]
 pub use accesskit;
@@ -366,7 +383,7 @@ pub use epaint::emath;
 pub use ecolor::hex_color;
 pub use ecolor::{Color32, Rgba};
 pub use emath::{
-    lerp, pos2, remap, remap_clamp, vec2, Align, Align2, NumExt, Pos2, Rangef, Rect, Vec2,
+    lerp, pos2, remap, remap_clamp, vec2, Align, Align2, NumExt, Pos2, Rangef, Rect, Vec2, Vec2b,
 };
 pub use epaint::{
     mutex,
@@ -389,7 +406,9 @@ pub use {
     context::{Context, RequestRepaintInfo},
     data::{
         input::*,
-        output::{self, CursorIcon, FullOutput, PlatformOutput, UserAttentionType, WidgetInfo},
+        output::{
+            self, CursorIcon, FullOutput, OpenUrl, PlatformOutput, UserAttentionType, WidgetInfo,
+        },
     },
     grid::Grid,
     id::{Id, IdMap},
@@ -404,6 +423,7 @@ pub use {
     style::{FontSelection, Margin, Style, TextStyle, Visuals},
     text::{Galley, TextFormat},
     ui::Ui,
+    viewport::*,
     widget_text::{RichText, WidgetText},
     widgets::*,
 };
@@ -423,6 +443,35 @@ pub fn warn_if_debug_build(ui: &mut crate::Ui) {
 }
 
 // ----------------------------------------------------------------------------
+
+/// Include an image in the binary.
+///
+/// This is a wrapper over `include_bytes!`, and behaves in the same way.
+///
+/// It produces an [`ImageSource`] which can be used directly in [`Ui::image`] or [`Image::new`]:
+///
+/// ```
+/// # egui::__run_test_ui(|ui| {
+/// ui.image(egui::include_image!("../assets/ferris.png"));
+/// ui.add(
+///     egui::Image::new(egui::include_image!("../assets/ferris.png"))
+///         .max_width(200.0)
+///         .rounding(10.0),
+/// );
+///
+/// let image_source: egui::ImageSource = egui::include_image!("../assets/ferris.png");
+/// assert_eq!(image_source.uri(), Some("bytes://../assets/ferris.png"));
+/// # });
+/// ```
+#[macro_export]
+macro_rules! include_image {
+    ($path: literal) => {
+        $crate::ImageSource::Bytes {
+            uri: ::std::borrow::Cow::Borrowed(concat!("bytes://", $path)),
+            bytes: $crate::load::Bytes::Static(include_bytes!($path)),
+        }
+    };
+}
 
 /// Create a [`Hyperlink`](crate::Hyperlink) to the current [`file!()`] (and line) on Github
 ///
@@ -451,32 +500,6 @@ macro_rules! github_link_file {
     ($github_url: expr, $label: expr) => {{
         let url = format!("{}{}", $github_url, file!());
         $crate::Hyperlink::from_label_and_url($label, url)
-    }};
-}
-
-// ----------------------------------------------------------------------------
-
-/// Show debug info on hover when [`Context::set_debug_on_hover`] has been turned on.
-///
-/// ```
-/// # egui::__run_test_ui(|ui| {
-/// // Turn on tracing of widgets
-/// ui.ctx().set_debug_on_hover(true);
-///
-/// /// Show [`std::file`], [`std::line`] and argument on hover
-/// egui::trace!(ui, "MyWindow");
-///
-/// /// Show [`std::file`] and [`std::line`] on hover
-/// egui::trace!(ui);
-/// # });
-/// ```
-#[macro_export]
-macro_rules! trace {
-    ($ui: expr) => {{
-        $ui.trace_location(format!("{}:{}", file!(), line!()))
-    }};
-    ($ui: expr, $label: expr) => {{
-        $ui.trace_location(format!("{} - {}:{}", $label, file!(), line!()))
     }};
 }
 
@@ -618,8 +641,8 @@ mod profiling_scopes {
     /// Profiling macro for feature "puffin"
     macro_rules! profile_function {
         ($($arg: tt)*) => {
-            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
             #[cfg(feature = "puffin")]
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
             puffin::profile_function!($($arg)*);
         };
     }
@@ -628,12 +651,13 @@ mod profiling_scopes {
     /// Profiling macro for feature "puffin"
     macro_rules! profile_scope {
         ($($arg: tt)*) => {
-            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
             #[cfg(feature = "puffin")]
+            #[cfg(not(target_arch = "wasm32"))] // Disabled on web because of the coarse 1ms clock resolution there.
             puffin::profile_scope!($($arg)*);
         };
     }
     pub(crate) use profile_scope;
 }
 
+#[allow(unused_imports)]
 pub(crate) use profiling_scopes::*;

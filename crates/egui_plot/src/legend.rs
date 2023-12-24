@@ -46,18 +46,21 @@ impl Default for Legend {
 
 impl Legend {
     /// Which text style to use for the legend. Default: `TextStyle::Body`.
+    #[inline]
     pub fn text_style(mut self, style: TextStyle) -> Self {
         self.text_style = style;
         self
     }
 
     /// The alpha of the legend background. Default: `0.75`.
+    #[inline]
     pub fn background_alpha(mut self, alpha: f32) -> Self {
         self.background_alpha = alpha;
         self
     }
 
     /// In which corner to place the legend. Default: `Corner::RightTop`.
+    #[inline]
     pub fn position(mut self, corner: Corner) -> Self {
         self.position = corner;
         self
@@ -141,7 +144,7 @@ impl LegendEntry {
         };
 
         let text_position = pos2(text_position_x, rect.center().y - 0.5 * galley.size().y);
-        painter.galley_with_color(text_position, galley, visuals.text_color());
+        painter.galley(text_position, galley, visuals.text_color());
 
         *checked ^= response.clicked_by(PointerButton::Primary);
         *hovered = response.hovered();

@@ -119,7 +119,7 @@ impl std::fmt::Debug for Element {
         match &self {
             Self::Value { value, .. } => f
                 .debug_struct("Element::Value")
-                .field("type_id", &value.type_id())
+                .field("type_id", &(**value).type_id())
                 .finish_non_exhaustive(),
             Self::Serialized(SerializedElement {
                 type_id,
@@ -318,7 +318,7 @@ use crate::Id;
 ///
 /// Values can either be "persisted" (serializable) or "temporary" (cleared when egui is shut down).
 ///
-/// You can store state using the key [`Id::null`]. The state will then only be identified by its type.
+/// You can store state using the key [`Id::NULL`]. The state will then only be identified by its type.
 ///
 /// ```
 /// # use egui::{Id, util::IdTypeMap};
@@ -588,10 +588,9 @@ impl PersistedMap {
             crate::profile_scope!("gather");
             for (hash, element) in &map.map {
                 if let Some(element) = element.to_serialize() {
-                    let mut stats = types_map.entry(element.type_id).or_default();
+                    let stats = types_map.entry(element.type_id).or_default();
                     stats.num_bytes += element.ron.len();
-                    let mut generation_stats =
-                        stats.generations.entry(element.generation).or_default();
+                    let generation_stats = stats.generations.entry(element.generation).or_default();
                     generation_stats.num_bytes += element.ron.len();
                     generation_stats.elements.push((*hash, element));
                 } else {
