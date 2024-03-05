@@ -66,9 +66,9 @@ fn shape_impl_send_sync() {
     assert_send_sync::<Shape>();
 }
 
-impl From<Vec<Shape>> for Shape {
+impl From<Vec<Self>> for Shape {
     #[inline(always)]
-    fn from(shapes: Vec<Shape>) -> Self {
+    fn from(shapes: Vec<Self>) -> Self {
         Self::Vec(shapes)
     }
 }
@@ -95,7 +95,7 @@ impl Shape {
     /// A horizontal line.
     pub fn hline(x: impl Into<Rangef>, y: f32, stroke: impl Into<Stroke>) -> Self {
         let x = x.into();
-        Shape::LineSegment {
+        Self::LineSegment {
             points: [pos2(x.min, y), pos2(x.max, y)],
             stroke: stroke.into(),
         }
@@ -104,7 +104,7 @@ impl Shape {
     /// A vertical line.
     pub fn vline(x: f32, y: impl Into<Rangef>, stroke: impl Into<Stroke>) -> Self {
         let y = y.into();
-        Shape::LineSegment {
+        Self::LineSegment {
             points: [pos2(x, y.min), pos2(x, y.max)],
             stroke: stroke.into(),
         }
@@ -182,7 +182,7 @@ impl Shape {
         stroke: impl Into<Stroke>,
         dash_length: f32,
         gap_length: f32,
-        shapes: &mut Vec<Shape>,
+        shapes: &mut Vec<Self>,
     ) {
         dashes_from_line(
             points,
@@ -202,7 +202,7 @@ impl Shape {
         dash_lengths: &[f32],
         gap_lengths: &[f32],
         dash_offset: f32,
-        shapes: &mut Vec<Shape>,
+        shapes: &mut Vec<Self>,
     ) {
         dashes_from_line(
             points,
@@ -264,7 +264,7 @@ impl Shape {
         color: Color32,
     ) -> Self {
         let galley = fonts.layout_no_wrap(text.to_string(), font_id, color);
-        let rect = anchor.anchor_rect(Rect::from_min_size(pos, galley.size()));
+        let rect = anchor.anchor_size(pos, galley.size());
         Self::galley(rect.min, galley, color)
     }
 
@@ -309,7 +309,7 @@ impl Shape {
     pub fn image(texture_id: TextureId, rect: Rect, uv: Rect, tint: Color32) -> Self {
         let mut mesh = Mesh::with_texture(texture_id);
         mesh.add_rect_with_uv(rect, uv, tint);
-        Shape::mesh(mesh)
+        Self::mesh(mesh)
     }
 
     /// The visual bounding rectangle (includes stroke widths)
@@ -346,9 +346,9 @@ impl Shape {
 impl Shape {
     #[inline(always)]
     pub fn texture_id(&self) -> super::TextureId {
-        if let Shape::Mesh(mesh) = self {
+        if let Self::Mesh(mesh) = self {
             mesh.texture_id
-        } else if let Shape::Rect(rect_shape) = self {
+        } else if let Self::Rect(rect_shape) = self {
             rect_shape.fill_texture_id
         } else {
             super::TextureId::default()
@@ -356,48 +356,70 @@ impl Shape {
     }
 
     /// Move the shape by this many points, in-place.
-    pub fn translate(&mut self, delta: Vec2) {
+    ///
+    /// If using a [`PaintCallback`], note that only the rect is scaled as opposed
+    /// to other shapes where the stroke is also scaled.
+    pub fn transform(&mut self, transform: TSTransform) {
         match self {
-            Shape::Noop => {}
-            Shape::Vec(shapes) => {
+            Self::Noop => {}
+            Self::Vec(shapes) => {
                 for shape in shapes {
-                    shape.translate(delta);
+                    shape.transform(transform);
                 }
             }
-            Shape::Circle(circle_shape) => {
-                circle_shape.center += delta;
+            Self::Circle(circle_shape) => {
+                circle_shape.center = transform * circle_shape.center;
+                circle_shape.radius *= transform.scaling;
+                circle_shape.stroke.width *= transform.scaling;
             }
-            Shape::LineSegment { points, .. } => {
+            Self::LineSegment { points, stroke } => {
                 for p in points {
-                    *p += delta;
+                    *p = transform * *p;
                 }
+                stroke.width *= transform.scaling;
             }
-            Shape::Path(path_shape) => {
+            Self::Path(path_shape) => {
                 for p in &mut path_shape.points {
-                    *p += delta;
+                    *p = transform * *p;
                 }
+                path_shape.stroke.width *= transform.scaling;
             }
-            Shape::Rect(rect_shape) => {
-                rect_shape.rect = rect_shape.rect.translate(delta);
+            Self::Rect(rect_shape) => {
+                rect_shape.rect = transform * rect_shape.rect;
+                rect_shape.stroke.width *= transform.scaling;
             }
-            Shape::Text(text_shape) => {
-                text_shape.pos += delta;
+            Self::Text(text_shape) => {
+                text_shape.pos = transform * text_shape.pos;
+
+                // Scale text:
+                let galley = Arc::make_mut(&mut text_shape.galley);
+                for row in &mut galley.rows {
+                    row.visuals.mesh_bounds = transform.scaling * row.visuals.mesh_bounds;
+                    for v in &mut row.visuals.mesh.vertices {
+                        v.pos = Pos2::new(transform.scaling * v.pos.x, transform.scaling * v.pos.y);
+                    }
+                }
+
+                galley.mesh_bounds = transform.scaling * galley.mesh_bounds;
+                galley.rect = transform.scaling * galley.rect;
             }
-            Shape::Mesh(mesh) => {
-                mesh.translate(delta);
+            Self::Mesh(mesh) => {
+                mesh.transform(transform);
             }
-            Shape::QuadraticBezier(bezier_shape) => {
-                bezier_shape.points[0] += delta;
-                bezier_shape.points[1] += delta;
-                bezier_shape.points[2] += delta;
+            Self::QuadraticBezier(bezier_shape) => {
+                bezier_shape.points[0] = transform * bezier_shape.points[0];
+                bezier_shape.points[1] = transform * bezier_shape.points[1];
+                bezier_shape.points[2] = transform * bezier_shape.points[2];
+                bezier_shape.stroke.width *= transform.scaling;
             }
-            Shape::CubicBezier(cubic_curve) => {
+            Self::CubicBezier(cubic_curve) => {
                 for p in &mut cubic_curve.points {
-                    *p += delta;
+                    *p = transform * *p;
                 }
+                cubic_curve.stroke.width *= transform.scaling;
             }
-            Shape::Callback(shape) => {
-                shape.rect = shape.rect.translate(delta);
+            Self::Callback(shape) => {
+                shape.rect = transform * shape.rect;
             }
         }
     }
@@ -484,7 +506,7 @@ impl PathShape {
     /// Use [`Shape::line_segment`] instead if your line only connects two points.
     #[inline]
     pub fn line(points: Vec<Pos2>, stroke: impl Into<Stroke>) -> Self {
-        PathShape {
+        Self {
             points,
             closed: false,
             fill: Default::default(),
@@ -495,7 +517,7 @@ impl PathShape {
     /// A line that closes back to the start point again.
     #[inline]
     pub fn closed_line(points: Vec<Pos2>, stroke: impl Into<Stroke>) -> Self {
-        PathShape {
+        Self {
             points,
             closed: true,
             fill: Default::default(),
@@ -512,7 +534,7 @@ impl PathShape {
         fill: impl Into<Color32>,
         stroke: impl Into<Stroke>,
     ) -> Self {
-        PathShape {
+        Self {
             points,
             closed: true,
             fill: fill.into(),
@@ -679,7 +701,7 @@ impl Rounding {
     };
 
     #[inline]
-    pub fn same(radius: f32) -> Self {
+    pub const fn same(radius: f32) -> Self {
         Self {
             nw: radius,
             ne: radius,
@@ -745,6 +767,10 @@ pub struct TextShape {
     /// This only affects the glyphs and will NOT replace background color nor strikethrough/underline color.
     pub override_text_color: Option<Color32>,
 
+    /// If set, the text will be rendered with the given opacity in gamma space
+    /// Affects everything: backgrounds, glyphs, strikethough, underline, etc.
+    pub opacity_factor: f32,
+
     /// Rotate text by this many radians clockwise.
     /// The pivot is `pos` (the upper left corner of the text).
     pub angle: f32,
@@ -762,6 +788,7 @@ impl TextShape {
             underline: Stroke::NONE,
             fallback_color,
             override_text_color: None,
+            opacity_factor: 1.0,
             angle: 0.0,
         }
     }
@@ -790,6 +817,13 @@ impl TextShape {
     #[inline]
     pub fn with_angle(mut self, angle: f32) -> Self {
         self.angle = angle;
+        self
+    }
+
+    /// Render text with this opacity in gamma space
+    #[inline]
+    pub fn with_opacity_factor(mut self, opacity_factor: f32) -> Self {
+        self.opacity_factor = opacity_factor;
         self
     }
 }

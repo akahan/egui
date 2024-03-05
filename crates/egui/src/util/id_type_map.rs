@@ -476,11 +476,19 @@ impl IdTypeMap {
         }
     }
 
-    /// Remove the state of this type an id.
+    /// Remove the state of this type and id.
     #[inline]
     pub fn remove<T: 'static>(&mut self, id: Id) {
         let hash = hash(TypeId::of::<T>(), id);
         self.map.remove(&hash);
+    }
+
+    /// Remove and fetch the state of this type and id.
+    #[inline]
+    pub fn remove_temp<T: 'static + Default>(&mut self, id: Id) -> Option<T> {
+        let hash = hash(TypeId::of::<T>(), id);
+        let mut element = self.map.remove(&hash)?;
+        Some(std::mem::take(element.get_mut_temp()?))
     }
 
     /// Note all state of the given type.

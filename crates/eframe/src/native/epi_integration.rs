@@ -1,10 +1,9 @@
 //! Common tools used by [`super::glow_integration`] and [`super::wgpu_integration`].
 
-use std::time::Instant;
-
+use web_time::Instant;
 use winit::event_loop::EventLoopWindowTarget;
 
-use raw_window_handle::{HasRawDisplayHandle as _, HasRawWindowHandle as _};
+use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
 
 use egui::{DeferredViewportUiCallback, NumExt as _, ViewportBuilder, ViewportId};
 use egui_winit::{EventResponse, WindowSettings};
@@ -165,8 +164,8 @@ impl EpiIntegration {
             gl,
             #[cfg(feature = "wgpu")]
             wgpu_render_state,
-            raw_display_handle: window.raw_display_handle(),
-            raw_window_handle: window.raw_window_handle(),
+            raw_display_handle: window.display_handle().map(|h| h.as_raw()),
+            raw_window_handle: window.window_handle().map(|h| h.as_raw()),
         };
 
         let icon = native_options
@@ -259,7 +258,6 @@ impl EpiIntegration {
     }
 
     pub fn pre_update(&mut self) {
-        self.frame_start = Instant::now();
         self.app_icon_setter.update();
     }
 
@@ -304,9 +302,8 @@ impl EpiIntegration {
         std::mem::take(&mut self.pending_full_output)
     }
 
-    pub fn post_update(&mut self) {
-        let frame_time = self.frame_start.elapsed().as_secs_f64() as f32;
-        self.frame.info.cpu_usage = Some(frame_time);
+    pub fn report_frame_time(&mut self, seconds: f32) {
+        self.frame.info.cpu_usage = Some(seconds);
     }
 
     pub fn post_rendering(&mut self, window: &winit::window::Window) {
