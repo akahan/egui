@@ -50,24 +50,21 @@ fn paint_if_needed(runner: &mut AppRunner) {
 pub(crate) fn install_document_events(runner_ref: &WebRunner) -> Result<(), JsValue> {
     let document = web_sys::window().unwrap().document().unwrap();
 
-    {
-        // Avoid sticky modifier keys on alt-tab:
-        for event_name in ["blur", "focus"] {
-            let closure = move |_event: web_sys::MouseEvent, runner: &mut AppRunner| {
-                let has_focus = event_name == "focus";
+    for event_name in ["blur", "focus"] {
+        let closure = move |_event: web_sys::MouseEvent, runner: &mut AppRunner| {
+            // log::debug!("{event_name:?}");
+            let has_focus = event_name == "focus";
 
-                if !has_focus {
-                    // We lost focus - good idea to save
-                    runner.save();
-                }
+            if !has_focus {
+                // We lost focus - good idea to save
+                runner.save();
+            }
 
-                runner.input.on_web_page_focus_change(has_focus);
-                runner.egui_ctx().request_repaint();
-                // log::debug!("{event_name:?}");
-            };
+            runner.input.on_web_page_focus_change(has_focus);
+            runner.egui_ctx().request_repaint();
+        };
 
-            runner_ref.add_event_listener(&document, event_name, closure)?;
-        }
+        runner_ref.add_event_listener(&document, event_name, closure)?;
     }
 
     runner_ref.add_event_listener(
@@ -88,7 +85,7 @@ pub(crate) fn install_document_events(runner_ref: &WebRunner) -> Result<(), JsVa
             if let Some(key) = egui_key {
                 runner.input.raw.events.push(egui::Event::Key {
                     key,
-                    physical_key: None, // TODO
+                    physical_key: None, // TODO(fornwall)
                     pressed: true,
                     repeat: false, // egui will fill this in for us!
                     modifiers,
@@ -155,7 +152,7 @@ pub(crate) fn install_document_events(runner_ref: &WebRunner) -> Result<(), JsVa
             if let Some(key) = translate_key(&event.key()) {
                 runner.input.raw.events.push(egui::Event::Key {
                     key,
-                    physical_key: None, // TODO
+                    physical_key: None, // TODO(fornwall)
                     pressed: false,
                     repeat: false,
                     modifiers,
@@ -228,13 +225,31 @@ pub(crate) fn install_document_events(runner_ref: &WebRunner) -> Result<(), JsVa
 pub(crate) fn install_window_events(runner_ref: &WebRunner) -> Result<(), JsValue> {
     let window = web_sys::window().unwrap();
 
+    for event_name in ["blur", "focus"] {
+        let closure = move |_event: web_sys::MouseEvent, runner: &mut AppRunner| {
+            // log::debug!("{event_name:?}");
+            let has_focus = event_name == "focus";
+
+            if !has_focus {
+                // We lost focus - good idea to save
+                runner.save();
+            }
+
+            runner.input.on_web_page_focus_change(has_focus);
+            runner.egui_ctx().request_repaint();
+        };
+
+        runner_ref.add_event_listener(&window, event_name, closure)?;
+    }
+
     // Save-on-close
     runner_ref.add_event_listener(&window, "onbeforeunload", |_: web_sys::Event, runner| {
         runner.save();
     })?;
 
     for event_name in &["load", "pagehide", "pageshow", "resize"] {
-        runner_ref.add_event_listener(&window, event_name, |_: web_sys::Event, runner| {
+        runner_ref.add_event_listener(&window, event_name, move |_: web_sys::Event, runner| {
+            // log::debug!("{event_name:?}");
             runner.needs_repaint.repaint_asap();
         })?;
     }
@@ -242,6 +257,7 @@ pub(crate) fn install_window_events(runner_ref: &WebRunner) -> Result<(), JsValu
     runner_ref.add_event_listener(&window, "hashchange", |_: web_sys::Event, runner| {
         // `epi::Frame::info(&self)` clones `epi::IntegrationInfo`, but we need to modify the original here
         runner.frame.info.web_info.location.hash = location_hash();
+        runner.needs_repaint.repaint_asap(); // tell the user about the new hash
     })?;
 
     Ok(())
@@ -296,7 +312,7 @@ pub(crate) fn install_canvas_events(runner_ref: &WebRunner) -> Result<(), JsValu
             let modifiers = modifiers_from_mouse_event(&event);
             runner.input.raw.modifiers = modifiers;
             if let Some(button) = button_from_mouse_event(&event) {
-                let pos = pos_from_mouse_event(runner.canvas(), &event);
+                let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
                 let modifiers = runner.input.raw.modifiers;
                 runner.input.raw.events.push(egui::Event::PointerButton {
                     pos,
@@ -323,7 +339,7 @@ pub(crate) fn install_canvas_events(runner_ref: &WebRunner) -> Result<(), JsValu
         |event: web_sys::MouseEvent, runner| {
             let modifiers = modifiers_from_mouse_event(&event);
             runner.input.raw.modifiers = modifiers;
-            let pos = pos_from_mouse_event(runner.canvas(), &event);
+            let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
             runner.input.raw.events.push(egui::Event::PointerMoved(pos));
             runner.needs_repaint.repaint_asap();
             event.stop_propagation();
@@ -335,7 +351,7 @@ pub(crate) fn install_canvas_events(runner_ref: &WebRunner) -> Result<(), JsValu
         let modifiers = modifiers_from_mouse_event(&event);
         runner.input.raw.modifiers = modifiers;
         if let Some(button) = button_from_mouse_event(&event) {
-            let pos = pos_from_mouse_event(runner.canvas(), &event);
+            let pos = pos_from_mouse_event(runner.canvas(), &event, runner.egui_ctx());
             let modifiers = runner.input.raw.modifiers;
             runner.input.raw.events.push(egui::Event::PointerButton {
                 pos,
@@ -373,7 +389,12 @@ pub(crate) fn install_canvas_events(runner_ref: &WebRunner) -> Result<(), JsValu
         "touchstart",
         |event: web_sys::TouchEvent, runner| {
             let mut latest_touch_pos_id = runner.input.latest_touch_pos_id;
-            let pos = pos_from_touch_event(runner.canvas(), &event, &mut latest_touch_pos_id);
+            let pos = pos_from_touch_event(
+                runner.canvas(),
+                &event,
+                &mut latest_touch_pos_id,
+                runner.egui_ctx(),
+            );
             runner.input.latest_touch_pos_id = latest_touch_pos_id;
             runner.input.latest_touch_pos = Some(pos);
             let modifiers = runner.input.raw.modifiers;
@@ -396,7 +417,12 @@ pub(crate) fn install_canvas_events(runner_ref: &WebRunner) -> Result<(), JsValu
         "touchmove",
         |event: web_sys::TouchEvent, runner| {
             let mut latest_touch_pos_id = runner.input.latest_touch_pos_id;
-            let pos = pos_from_touch_event(runner.canvas(), &event, &mut latest_touch_pos_id);
+            let pos = pos_from_touch_event(
+                runner.canvas(),
+                &event,
+                &mut latest_touch_pos_id,
+                runner.egui_ctx(),
+            );
             runner.input.latest_touch_pos_id = latest_touch_pos_id;
             runner.input.latest_touch_pos = Some(pos);
             runner.input.raw.events.push(egui::Event::PointerMoved(pos));
@@ -459,7 +485,9 @@ pub(crate) fn install_canvas_events(runner_ref: &WebRunner) -> Result<(), JsValu
         });
 
         let scroll_multiplier = match unit {
-            egui::MouseWheelUnit::Page => canvas_size_in_points(runner.canvas()).y,
+            egui::MouseWheelUnit::Page => {
+                canvas_size_in_points(runner.canvas(), runner.egui_ctx()).y
+            }
             egui::MouseWheelUnit::Line => {
                 #[allow(clippy::let_and_return)]
                 let points_per_scroll_line = 8.0; // Note that this is intentionally different from what we use in winit.

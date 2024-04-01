@@ -23,7 +23,8 @@ pub use crate::{
     axis::{Axis, AxisHints, HPlacement, Placement, VPlacement},
     items::{
         Arrows, Bar, BarChart, BoxElem, BoxPlot, BoxSpread, HLine, Line, LineStyle, MarkerShape,
-        Orientation, PlotImage, PlotItem, PlotPoint, PlotPoints, Points, Polygon, Text, VLine,
+        Orientation, PlotGeometry, PlotImage, PlotItem, PlotPoint, PlotPoints, Points, Polygon,
+        Text, VLine,
     },
     legend::{Corner, Legend},
     memory::PlotMemory,
@@ -799,7 +800,7 @@ impl Plot {
         let plot_id = id.unwrap_or_else(|| ui.make_persistent_id(id_source));
 
         let ([x_axis_widgets, y_axis_widgets], plot_rect) = axis_widgets(
-            PlotMemory::load(ui.ctx(), plot_id).as_ref(), // TODO: avoid loading plot memory twice
+            PlotMemory::load(ui.ctx(), plot_id).as_ref(), // TODO(emilk): avoid loading plot memory twice
             show_axes,
             complete_rect,
             [&x_axes, &y_axes],
@@ -1020,7 +1021,7 @@ impl Plot {
                 delta.y = 0.0;
             }
             mem.transform.translate_bounds(delta);
-            mem.auto_bounds = !allow_drag;
+            mem.auto_bounds = mem.auto_bounds.and(!allow_drag);
         }
 
         // Zooming
@@ -1075,8 +1076,13 @@ impl Plot {
             }
         }
 
-        let hover_pos = response.hover_pos();
-        if let Some(hover_pos) = hover_pos {
+        // Note: we catch zoom/pan if the response contains the pointer, even if it isn't hovered.
+        // For instance: The user is painting another interactive widget on top of the plot
+        // but they still want to be able to pan/zoom the plot.
+        if let (true, Some(hover_pos)) = (
+            response.contains_pointer,
+            ui.input(|i| i.pointer.hover_pos()),
+        ) {
             if allow_zoom.any() {
                 let mut zoom_factor = if data_aspect.is_some() {
                     Vec2::splat(ui.input(|i| i.zoom_delta()))
@@ -1091,7 +1097,7 @@ impl Plot {
                 }
                 if zoom_factor != Vec2::splat(1.0) {
                     mem.transform.zoom(zoom_factor, hover_pos);
-                    mem.auto_bounds = !allow_zoom;
+                    mem.auto_bounds = mem.auto_bounds.and(!allow_zoom);
                 }
             }
             if allow_scroll.any() {
@@ -1648,12 +1654,15 @@ impl PreparedPlot {
 
         let interact_radius_sq = (16.0_f32).powi(2);
 
-        let candidates = items.iter().filter_map(|item| {
-            let item = &**item;
-            let closest = item.find_closest(pointer, transform);
+        let candidates = items
+            .iter()
+            .filter(|entry| entry.allow_hover())
+            .filter_map(|item| {
+                let item = &**item;
+                let closest = item.find_closest(pointer, transform);
 
-            Some(item).zip(closest)
-        });
+                Some(item).zip(closest)
+            });
 
         let closest = candidates
             .min_by_key(|(_, elem)| elem.dist_sq.ord())

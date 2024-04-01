@@ -607,7 +607,7 @@ impl Rect {
 
 impl Rect {
     /// Does this Rect intersect the given ray (where `d` is normalized)?
-    pub fn intesects_ray(&self, o: Pos2, d: Vec2) -> bool {
+    pub fn intersects_ray(&self, o: Pos2, d: Vec2) -> bool {
         let mut tmin = -f32::INFINITY;
         let mut tmax = f32::INFINITY;
 
@@ -678,5 +678,24 @@ impl Div<f32> for Rect {
             min: self.min / factor,
             max: self.max / factor,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rect() {
+        let r = Rect::from_min_max(pos2(10.0, 10.0), pos2(20.0, 20.0));
+        assert_eq!(r.distance_sq_to_pos(pos2(15.0, 15.0)), 0.0);
+        assert_eq!(r.distance_sq_to_pos(pos2(10.0, 15.0)), 0.0);
+        assert_eq!(r.distance_sq_to_pos(pos2(10.0, 10.0)), 0.0);
+
+        assert_eq!(r.distance_sq_to_pos(pos2(5.0, 15.0)), 25.0); // left of
+        assert_eq!(r.distance_sq_to_pos(pos2(25.0, 15.0)), 25.0); // right of
+        assert_eq!(r.distance_sq_to_pos(pos2(15.0, 5.0)), 25.0); // above
+        assert_eq!(r.distance_sq_to_pos(pos2(15.0, 25.0)), 25.0); // below
+        assert_eq!(r.distance_sq_to_pos(pos2(25.0, 5.0)), 50.0); // right and above
     }
 }

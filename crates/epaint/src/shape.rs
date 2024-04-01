@@ -30,6 +30,9 @@ pub enum Shape {
     /// Circle with optional outline and fill.
     Circle(CircleShape),
 
+    /// Ellipse with optional outline and fill.
+    Ellipse(EllipseShape),
+
     /// A line between two points.
     LineSegment { points: [Pos2; 2], stroke: Stroke },
 
@@ -237,6 +240,16 @@ impl Shape {
     }
 
     #[inline]
+    pub fn ellipse_filled(center: Pos2, radius: Vec2, fill_color: impl Into<Color32>) -> Self {
+        Self::Ellipse(EllipseShape::filled(center, radius, fill_color))
+    }
+
+    #[inline]
+    pub fn ellipse_stroke(center: Pos2, radius: Vec2, stroke: impl Into<Stroke>) -> Self {
+        Self::Ellipse(EllipseShape::stroke(center, radius, stroke))
+    }
+
+    #[inline]
     pub fn rect_filled(
         rect: Rect,
         rounding: impl Into<Rounding>,
@@ -324,6 +337,7 @@ impl Shape {
                 rect
             }
             Self::Circle(circle_shape) => circle_shape.visual_bounding_rect(),
+            Self::Ellipse(ellipse_shape) => ellipse_shape.visual_bounding_rect(),
             Self::LineSegment { points, stroke } => {
                 if stroke.is_empty() {
                     Rect::NOTHING
@@ -387,6 +401,11 @@ impl Shape {
                 circle_shape.center = transform * circle_shape.center;
                 circle_shape.radius *= transform.scaling;
                 circle_shape.stroke.width *= transform.scaling;
+            }
+            Self::Ellipse(ellipse_shape) => {
+                ellipse_shape.center = transform * ellipse_shape.center;
+                ellipse_shape.radius *= transform.scaling;
+                ellipse_shape.stroke.width *= transform.scaling;
             }
             Self::LineSegment { points, stroke } => {
                 for p in points {
@@ -497,6 +516,61 @@ impl From<CircleShape> for Shape {
 
 // ----------------------------------------------------------------------------
 
+/// How to paint an ellipse.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct EllipseShape {
+    pub center: Pos2,
+
+    /// Radius is the vector (a, b) where the width of the Ellipse is 2a and the height is 2b
+    pub radius: Vec2,
+    pub fill: Color32,
+    pub stroke: Stroke,
+}
+
+impl EllipseShape {
+    #[inline]
+    pub fn filled(center: Pos2, radius: Vec2, fill_color: impl Into<Color32>) -> Self {
+        Self {
+            center,
+            radius,
+            fill: fill_color.into(),
+            stroke: Default::default(),
+        }
+    }
+
+    #[inline]
+    pub fn stroke(center: Pos2, radius: Vec2, stroke: impl Into<Stroke>) -> Self {
+        Self {
+            center,
+            radius,
+            fill: Default::default(),
+            stroke: stroke.into(),
+        }
+    }
+
+    /// The visual bounding rectangle (includes stroke width)
+    pub fn visual_bounding_rect(&self) -> Rect {
+        if self.fill == Color32::TRANSPARENT && self.stroke.is_empty() {
+            Rect::NOTHING
+        } else {
+            Rect::from_center_size(
+                self.center,
+                self.radius * 2.0 + Vec2::splat(self.stroke.width),
+            )
+        }
+    }
+}
+
+impl From<EllipseShape> for Shape {
+    #[inline(always)]
+    fn from(shape: EllipseShape) -> Self {
+        Self::Ellipse(shape)
+    }
+}
+
+// ----------------------------------------------------------------------------
+
 /// A path which can be stroked and/or filled (if closed).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -594,6 +668,14 @@ pub struct RectShape {
     /// The thickness and color of the outline.
     pub stroke: Stroke,
 
+    /// If larger than zero, the edges of the rectangle
+    /// (for both fill and stroke) will be blurred.
+    ///
+    /// This can be used to produce shadows and glow effects.
+    ///
+    /// The blur is currently implemented using a simple linear blur in sRGBA gamma space.
+    pub blur_width: f32,
+
     /// If the rect should be filled with a texture, which one?
     ///
     /// The texture is multiplied with [`Self::fill`].
@@ -621,6 +703,7 @@ impl RectShape {
             rounding: rounding.into(),
             fill: fill_color.into(),
             stroke: stroke.into(),
+            blur_width: 0.0,
             fill_texture_id: Default::default(),
             uv: Rect::ZERO,
         }
@@ -637,6 +720,7 @@ impl RectShape {
             rounding: rounding.into(),
             fill: fill_color.into(),
             stroke: Default::default(),
+            blur_width: 0.0,
             fill_texture_id: Default::default(),
             uv: Rect::ZERO,
         }
@@ -649,9 +733,22 @@ impl RectShape {
             rounding: rounding.into(),
             fill: Default::default(),
             stroke: stroke.into(),
+            blur_width: 0.0,
             fill_texture_id: Default::default(),
             uv: Rect::ZERO,
         }
+    }
+
+    /// If larger than zero, the edges of the rectangle
+    /// (for both fill and stroke) will be blurred.
+    ///
+    /// This can be used to produce shadows and glow effects.
+    ///
+    /// The blur is currently implemented using a simple linear blur in `sRGBA` gamma space.
+    #[inline]
+    pub fn with_blur_width(mut self, blur_width: f32) -> Self {
+        self.blur_width = blur_width;
+        self
     }
 
     /// The visual bounding rectangle (includes stroke width)
@@ -660,7 +757,8 @@ impl RectShape {
         if self.fill == Color32::TRANSPARENT && self.stroke.is_empty() {
             Rect::NOTHING
         } else {
-            self.rect.expand(self.stroke.width / 2.0)
+            self.rect
+                .expand((self.stroke.width + self.blur_width) / 2.0)
         }
     }
 }

@@ -27,6 +27,7 @@
 
 mod bezier;
 pub mod image;
+mod margin;
 mod mesh;
 pub mod mutex;
 mod shadow;
@@ -41,14 +42,15 @@ mod texture_handle;
 pub mod textures;
 pub mod util;
 
-pub use {
+pub use self::{
     bezier::{CubicBezierShape, QuadraticBezierShape},
     image::{ColorImage, FontImage, ImageData, ImageDelta},
+    margin::Margin,
     mesh::{Mesh, Mesh16, Vertex},
     shadow::Shadow,
     shape::{
-        CircleShape, PaintCallback, PaintCallbackInfo, PathShape, RectShape, Rounding, Shape,
-        TextShape,
+        CircleShape, EllipseShape, PaintCallback, PaintCallbackInfo, PathShape, RectShape,
+        Rounding, Shape, TextShape,
     },
     stats::PaintStats,
     stroke::Stroke,

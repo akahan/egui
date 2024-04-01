@@ -680,11 +680,12 @@ impl<'a> Slider<'a> {
         if ui.is_rect_visible(response.rect) {
             let value = self.get_value();
 
-            let rail_radius = ui.painter().round_to_pixel(self.rail_radius_limit(rect));
-            let rail_rect = self.rail_rect(rect, rail_radius);
-
             let visuals = ui.style().interact(response);
             let widget_visuals = &ui.visuals().widgets;
+            let spacing = &ui.style().spacing;
+
+            let rail_radius = (spacing.slider_rail_height / 2.0).at_least(0.0);
+            let rail_rect = self.rail_rect(rect, rail_radius);
 
             ui.painter().rect_filled(
                 rail_rect,
@@ -738,14 +739,8 @@ impl<'a> Slider<'a> {
                     };
                     let v = v + Vec2::splat(visuals.expansion);
                     let rect = Rect::from_center_size(center, 2.0 * v);
-                    ui.painter().add(epaint::RectShape {
-                        fill: visuals.bg_fill,
-                        stroke: visuals.fg_stroke,
-                        rect,
-                        rounding: visuals.rounding,
-                        fill_texture_id: Default::default(),
-                        uv: Rect::ZERO,
-                    });
+                    ui.painter()
+                        .rect(rect, visuals.rounding, visuals.bg_fill, visuals.fg_stroke);
                 }
             }
         }
@@ -798,13 +793,6 @@ impl<'a> Slider<'a> {
             SliderOrientation::Vertical => rect.width(),
         };
         limit / 2.5
-    }
-
-    fn rail_radius_limit(&self, rect: &Rect) -> f32 {
-        match self.orientation {
-            SliderOrientation::Horizontal => (rect.height() / 4.0).at_least(2.0),
-            SliderOrientation::Vertical => (rect.width() / 4.0).at_least(2.0),
-        }
     }
 
     fn value_ui(&mut self, ui: &mut Ui, position_range: Rangef) -> Response {
