@@ -271,8 +271,11 @@ fn run_and_exit(
             }) => {
                 let current_frame_nr = winit_app.frame_nr(*viewport_id);
                 if current_frame_nr == *frame_nr || current_frame_nr == *frame_nr + 1 {
+                    log::trace!("UserEvent::RequestRepaint scheduling repaint at {when:?}");
                     if let Some(window_id) = winit_app.window_id_from_viewport_id(*viewport_id) {
-                        EventResult::RepaintAt(window_id, *when)
+                        //New code
+                        winit_app.run_ui_and_paint(event_loop_window_target, window_id)
+                        //Original code :EventResult::RepaintAt(window_id, *when)
                     } else {
                         EventResult::Wait
                     }
@@ -281,7 +284,6 @@ fn run_and_exit(
                     EventResult::Wait // old request - we've already repainted
                 }
             }
-
             winit::event::Event::NewEvents(winit::event::StartCause::ResumeTimeReached {
                 ..
             }) => {
