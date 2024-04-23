@@ -5,6 +5,5 @@
 /.*.json
 /.vscode
 /media/*
-
 .idea/
 *.iml
